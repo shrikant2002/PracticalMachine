@@ -1,0 +1,254 @@
+# Building Predictive Model For Determining Fitness Exercise Correctness
+
+### Practical Machine Learning Assignment Writeup
+
+## Abstract
+
+In this assignment, I build a predictive model to determine whether a
+particular form of exercise (barbell lifting) is performed correctly, using
+accelerometer data. The data set used is originally from [1].
+
+## Data Retrieval
+
+The dataset from [1] can be downloaded as follows:
+
+```{r cache=T}
+if (! file.exists('./pml-training.csv')) {
+    download.file('http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', destfile = './pml-training.csv')
+}
+if (! file.exists('./pml-testing.csv')) {
+    download.file('http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', destfile = './pml-testing.csv')
+}
+```
+
+The data is in standard CSV format and can be loaded into R using the usual
+facilities for working with CSV data:
+
+```{r cache=T}
+pml.training <- read.csv('./pml-training.csv')
+pml.testing <- read.csv('./pml-testing.csv')
+```
+
+## Exploratory Analysis
+
+The training set consists of 19622 observations of 160 variables, one of which
+is the dependent variable as far as this study is concerned:
+
+```{r}
+dim(pml.training)
+```
+
+Inspection of the data set indicates that many of the 159 predictors are
+missing in most of the observations:
+
+```{r}
+sum(complete.cases(pml.training))
+head(pml.training)
+```
+
+Choosing between discarding most of the observations but using more predictors
+and discarding some predictors to keep most of the observations is easy: more
+observations are always a good thing, while additional variables may or may
+not be helpful.
+
+Additionally, it's worth noting that some of the variables in the data set do
+not come from accelerometer measurements and record experimental setup or
+participants' data. Treating those as potential confounders is a sane thing to
+do, so in addition to predictors with missing data, I also discarded the
+following variables: X, user_name, raw_timestamp_part1, raw_timestamp_part2,
+cvtd_timestamp, new_window and num_window.
+
+```{r}
+include.cols <- c('roll_belt', 'pitch_belt', 'yaw_belt', 'total_accel_belt',
+                  'gyros_belt_x', 'gyros_belt_y', 'gyros_belt_z',
+                  'accel_belt_x', 'accel_belt_y', 'accel_belt_z',
+                  'magnet_belt_x', 'magnet_belt_y', 'magnet_belt_z',
+                  'roll_arm', 'pitch_arm', 'yaw_arm', 'total_accel_arm',
+                  'gyros_arm_x', 'gyros_arm_y', 'gyros_arm_z',
+                  'accel_arm_x', 'accel_arm_y', 'accel_arm_z',
+                  'magnet_arm_x', 'magnet_arm_y', 'magnet_arm_z',
+                  'roll_dumbbell', 'pitch_dumbbell', 'yaw_dumbbell', 'total_accel_dumbbell',
+                  'gyros_dumbbell_x', 'gyros_dumbbell_y', 'gyros_dumbbell_z',
+                  'accel_dumbbell_x', 'accel_dumbbell_y', 'accel_dumbbell_z',
+                  'magnet_dumbbell_x', 'magnet_dumbbell_y', 'magnet_dumbbell_z',
+                  'roll_forearm', 'pitch_forearm', 'yaw_forearm', 'total_accel_forearm',
+                  'gyros_forearm_x', 'gyros_forearm_y', 'gyros_forearm_z',
+                  'accel_forearm_x', 'accel_forearm_y', 'accel_forearm_z',
+                  'magnet_forearm_x', 'magnet_forearm_y', 'magnet_forearm_z'
+                  )
+proc.pml.testing <- pml.testing[, include.cols]
+include.cols <- c(include.cols, 'classe')
+proc.pml.training <- pml.training[, include.cols]
+```
+
+Performing this transformation results in a data set of 19622 observations of
+53 variables (one of which is the dependent variable "classe").
+
+```{r}
+dim(proc.pml.training)
+sum(complete.cases(proc.pml.training))
+```
+
+Now that I've cleaned up the data set, it would make sense to explore
+associations in the data.
+
+```{r cache=T}
+pred.corr <- cor(proc.pml.training[, names(proc.pml.training) != 'classe'])
+pal <- colorRampPalette(c('blue', 'white', 'red'))(n = 199)
+heatmap(pred.corr, col = pal)
+```
+
+As can be seen from the heat map of the correlation matrix, most of predictors
+do not exhibit high degree of correlation. Nonetheless, there are a few pairs
+of variables that are highly correlated:
+
+```{r}
+pred.corr[(pred.corr < -0.8 | pred.corr > 0.8) & pred.corr != 1]
+```
+
+There are nineteen variable pairs the Pearson correlation coefficient for
+which is above an arbitrary cutoff of 0.8 (in absolute value). To avoid
+throwing out the baby with the bath water, I chose an even more arbitrary
+cutoff of 0.98, and found that there are two pairs of variables that lie above
+this threshold.
+
+```{r}
+which(pred.corr > 0.98 & pred.corr != 1)
+pred.corr[which(pred.corr > 0.98 & pred.corr != 1)]
+which(pred.corr < -0.98)
+pred.corr[which(pred.corr < -0.98)]
+```
+
+Interestingly, the roll_belt predictor participates in both of these pairwise
+interactions:
+
+```{r}
+pred.corr['roll_belt', 'total_accel_belt']
+pred.corr['roll_belt', 'accel_belt_z']
+pred.corr['total_accel_belt', 'accel_belt_z']
+```
+
+In view of this data, it seemed prudent to discard at least the roll_belt
+variable to prevent excessive bias in the model.
+
+```{r}
+include.cols <- c('pitch_belt', 'yaw_belt', 'total_accel_belt',
+                  'gyros_belt_x', 'gyros_belt_y', 'gyros_belt_z',
+                  'accel_belt_x', 'accel_belt_y', 'accel_belt_z',
+                  'magnet_belt_x', 'magnet_belt_y', 'magnet_belt_z',
+                  'roll_arm', 'pitch_arm', 'yaw_arm', 'total_accel_arm',
+                  'gyros_arm_x', 'gyros_arm_y', 'gyros_arm_z',
+                  'accel_arm_x', 'accel_arm_y', 'accel_arm_z',
+                  'magnet_arm_x', 'magnet_arm_y', 'magnet_arm_z',
+                  'roll_dumbbell', 'pitch_dumbbell', 'yaw_dumbbell', 'total_accel_dumbbell',
+                  'gyros_dumbbell_x', 'gyros_dumbbell_y', 'gyros_dumbbell_z',
+                  'accel_dumbbell_x', 'accel_dumbbell_y', 'accel_dumbbell_z',
+                  'magnet_dumbbell_x', 'magnet_dumbbell_y', 'magnet_dumbbell_z',
+                  'roll_forearm', 'pitch_forearm', 'yaw_forearm', 'total_accel_forearm',
+                  'gyros_forearm_x', 'gyros_forearm_y', 'gyros_forearm_z',
+                  'accel_forearm_x', 'accel_forearm_y', 'accel_forearm_z',
+                  'magnet_forearm_x', 'magnet_forearm_y', 'magnet_forearm_z'
+                  )
+proc.pml.testing <- pml.testing[, include.cols]
+include.cols <- c(include.cols, 'classe')
+proc.pml.training <- pml.training[, include.cols]
+```
+
+Its worth noting that this analysis only explores pairwise, linear
+associations between variables. Looking for more general interactions is not
+computationally feasible without expert insight into the problem domain.
+
+## Predictive Model
+
+For my initial attempt at building a predictive model I chose the random
+forest algorithm [2]. Random forests have several nice theoretical properties:
+
+1. They deal naturally with non-linearity, and assuming linearity in this case
+would be imprudent.
+
+2. There's no parameter selection involved. While random forest may overfit a
+given data set, just as any other machine learning algorithm, it has been
+shown by Breiman that classifier variance does not grow with the number of
+trees used (unlike with Adaboosted decision trees, for example). Therefore,
+it's always better to use more trees, memory and computational power allowing.
+
+3. The algorithm allows for good in-training estimates of variable importance
+and generalization error [2], which largely eliminates the need for a separate
+validation stage, though obtaining a proper generalization error estimate on
+a testing set would still be prudent.
+
+4. The algorithm is generally robust to outliers and correlated covariates
+[2], which seems like a nice property to have when there are known
+interactions between variables and no data on presence of outliers in the data
+set.
+
+Given that the problem at hand is a high-dimensional classification problem
+with number of observations much exceeding the number of predictors, random
+forest seems like a sound choice.
+
+```{r}
+library(randomForest)
+library(caret)
+library(grDevices)
+```
+
+I'll set a fixed RNG seed to ensure reproducibility of my results (the random
+forest classifier training being non-deterministic).
+
+```{r}
+set.seed(50351)
+```
+
+Let's train a classifier using all of our independent variables and 2048
+trees.
+
+```{r cache=T}
+model <- randomForest(classe ~ ., data = proc.pml.training, ntree = 2048)
+```
+
+```{r}
+model
+```
+
+The out-of-bag error tends to exceed the generalization error [2], so the
+figure of 0.29% seems very promising.
+
+```{r}
+model$confusion
+```
+
+The confusion matrix also looks good, indicating that the model fit the
+training set well. It may also be instructive to look at the variable
+importance estimates obtained by the classifier training algorithm.
+
+```{r}
+imp <- varImp(model)
+imp$Variable <- row.names(imp)
+imp[order(imp$Overall, decreasing = T),]
+```
+
+Only five variables have importance measure more than ten times lower than the
+most important variable (yaw_belt), which seems to indicate the algorithm
+employed made good use of provided predictors.
+
+The following command can be used to obtain model's prediction for the
+assigned testing data set (output concealed intentially):
+
+```{r eval=F}
+predict(model, proc.pml.testing)
+```
+
+The model achieves the perfect 100% accuracy on the limited "testing set"
+provided by the course staff.
+
+## Conclusion
+
+Given that the model obtained using the initial approach appears to be highly
+successful by all available measures, further exploration of the matter does
+not seem to be necessary.
+
+## References
+
+1. Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science., pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
+
+2. Breiman, L. (2001). Random forests. Machine learning, 45(1), 5-32.
